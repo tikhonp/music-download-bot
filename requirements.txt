@@ -1,0 +1,2 @@
+python-telegram-bot==22.5
+qobuz-dl==0.9.9.10
