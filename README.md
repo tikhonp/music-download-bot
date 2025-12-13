@@ -6,13 +6,24 @@ A Telegram bot that downloads music from Qobuz to specified directory
 
 1. Create a `.env` file in the project root like `.env.example`
 
-2. Build the Docker image:
+2. Run the Docker container with the necessary environment variables:
 
-   ```bash
-   docker build -t music-download-bot .
+   ```sh
+   docker run --env-file .env \
+     -v "/path/to/your/downloads:/downloads" \
+     -v "$HOME/.config/qobuz-dl:/qobuz-dl" \
+     ghcr.io/tikhonp/music-download-bot:latest
    ```
 
-3. Run the Docker container with the necessary environment variables:
+## Compose file
 
-   ```bash
-   docker run --env-file .env -v "/Users/tikhon/Desktop/untitled folder:/downloads" -v "$HOME/.config/qobuz-dl:/qobuz-dl" md-bot
+```yaml
+services:
+  music-download-bot:
+    image: ghcr.io/tikhonp/music-download-bot:latest
+    env_file:
+      - .env
+    volumes:
+      - "/path/to/your/downloads:/downloads"
+      - "$HOME/.config/qobuz-dl:/qobuz-dl"
+```
