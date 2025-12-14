@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from queue import Queue
 from threading import Thread
 
+import httpx
+
 from telegram.request import HTTPXRequest
 from telegram import Update
 from telegram.ext import (
@@ -48,6 +50,11 @@ QOBUZ_URL_PATTERN = re.compile(
     r'https?://(?:www\.)?(?:play\.qobuz\.com|open\.qobuz\.com|qobuz\.com)/'
     r'(?:album|track|playlist|artist|label)/[a-zA-Z0-9\-_]+'
 )
+
+START_SCAN_ENDPOINT = os.getenv("START_SCAN_ENDPOINT", "")
+
+if not START_SCAN_ENDPOINT:
+    logger.warning("No START_SCAN_ENDPOINT configured. Set START_SCAN_ENDPOINT environment variable if needed.")
 
 if not BOT_TOKEN or BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
     logger.error("Please set TELEGRAM_BOT_TOKEN environment variable")
@@ -120,9 +127,13 @@ class QobuzDownloadBot:
                 
                 # Download using Qobuz-dl
                 self.qobuz.handle_url(task.url)
-                
-                # Send success message
-                asyncio.run(self._send_success_message(task))
+
+                if not handle_download_id(self.qobuz.downloads_db, item_id, add_id=False):
+                    asyncio.run(self._send_error_message(task, "Download did not complete successfully."))
+                else:
+                    # Send success message
+                    asyncio.run(self._send_success_message(task))
+                    self.fire_rescan()
                 
             except Exception as e:
                 logger.error(f"Download failed for {task.url}: {e}")
@@ -178,6 +189,17 @@ class QobuzDownloadBot:
         """Add download task to queue"""
         self.download_queue.put(task)
         logger.info(f"Added to queue: {task.url} (Queue size: {self.download_queue.qsize()})")
+
+    def fire_rescan(self):
+        """Trigger a rescan via the configured endpoint"""
+        try:
+            response = httpx.get(START_SCAN_ENDPOINT, timeout=10)
+            if response.status_code == 200:
+                logger.info("Rescan triggered successfully.")
+            else:
+                logger.error(f"Failed to trigger rescan. Status code: {response.status_code}")
+        except Exception as e:
+            logger.error(f"Error triggering rescan: {e}")
 
 bot_instance = QobuzDownloadBot(BOT_TOKEN, WHITELIST_USERS, DOWNLOAD_PATH)
 
