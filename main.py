@@ -4,14 +4,15 @@ import sys
 import asyncio
 import logging
 from pathlib import Path
-from typing import Set, Optional
+from typing import Callable, Optional, Dict, Any, Set
 from dataclasses import dataclass
 from queue import Queue
 from threading import Thread
+import requests
+import time
 
 import httpx
 
-from telegram.request import HTTPXRequest
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -51,7 +52,18 @@ QOBUZ_URL_PATTERN = re.compile(
     r'(?:album|track|playlist|artist|label)/[a-zA-Z0-9\-_]+'
 )
 
+# Apple Music URL pattern
+APPLE_MUSIC_URL_PATTERN = re.compile(
+    r'https?://(?:music\.apple\.com|itunes\.apple\.com)/\S+'
+)
+
 START_SCAN_ENDPOINT = os.getenv("START_SCAN_ENDPOINT", "")
+
+APPLE_MUSIC_DOWNLOAD_URL=os.getenv("APPLE_MUSIC_DOWNLOAD_URL", "")
+
+
+if not APPLE_MUSIC_DOWNLOAD_URL:
+    logger.warning("No APPLE_MUSIC_DOWNLOAD_URL configured. Set APPLE_MUSIC_DOWNLOAD_URL environment variable if needed.")
 
 if not START_SCAN_ENDPOINT:
     logger.warning("No START_SCAN_ENDPOINT configured. Set START_SCAN_ENDPOINT environment variable if needed.")
@@ -71,6 +83,45 @@ if not QOBUZ_EMAIL or not QOBUZ_PASSWORD:
 if not PROXY_URL:
     logger.warning("No proxy configured. Set PROXY_URL environment variable if needed.")
 
+class AppleServiceSync:
+    def __init__(self, base_url: str, default_timeout: int = 10):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = default_timeout
+
+    def start_download(self, url: str, fmt: str = "alac", song: bool = False, debug: bool = False) -> str:
+        payload = {"url": url, "format": fmt, "song": song, "debug": debug}
+        resp = requests.post(f"{self.base_url}/download", json=payload, timeout=self.timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        return data["job_id"]
+
+    def get_status(self, job_id: str) -> Dict[str, Any]:
+        resp = requests.get(f"{self.base_url}/status/{job_id}", timeout=self.timeout)
+        resp.raise_for_status()
+        return resp.json()
+
+    def wait_for_completion(
+        self,
+        job_id: str,
+        poll_interval: float = 2.0,
+        max_wait: float = 3600.0,
+        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
+        """Poll until status is completed/failed or timeout. Call progress_callback(status_dict) on each poll."""
+        start = time.time()
+        while True:
+            status = self.get_status(job_id)
+            if progress_callback:
+                try:
+                    progress_callback(status)
+                except Exception:
+                    pass
+            s = status.get("status")
+            if s in ("completed", "failed"):
+                return status
+            if (time.time() - start) > max_wait:
+                raise TimeoutError(f"Timeout waiting for job {job_id} (waited {max_wait}s)")
+            time.sleep(poll_interval)
 
 @dataclass
 class DownloadTask:
@@ -78,6 +129,8 @@ class DownloadTask:
     chat_id: int
     message_id: int
     user_id: int
+    streaming_type: str # "qobuz" or "apple_music"
+
 
 class QobuzDownloadBot:
     def __init__(self, token: str, whitelist: Set[int], download_path: str):
@@ -92,6 +145,9 @@ class QobuzDownloadBot:
         # Initialize Qobuz-dl
         self.qobuz = None
         self._init_qobuz()
+
+        # Initialize Apple Music
+        self.apple_service = AppleServiceSync(base_url=APPLE_MUSIC_DOWNLOAD_URL)
         
         # Start download worker thread
         self.worker_thread = Thread(target=self._download_worker, daemon=True)
@@ -115,32 +171,69 @@ class QobuzDownloadBot:
         while True:
             task: DownloadTask = self.download_queue.get()
             
-            try:
-                self.is_downloading = True
-                logger.info(f"Starting download: {task.url}")
+            if task.streaming_type == "apple_music":
+                try:
+                    self.is_downloading = True
+                    logger.info(f"Starting Apple Music download: {task.url}")
 
+                    job_id = self.apple_service.start_download(url=task.url, fmt="alac", song=False, debug=False)
+                    
+                    def progress_callback(status: Dict[str, Any]):
+                        progress = status.get("progress", 0)
+                        logger.info(f"Apple Music download progress for {task.url}: {progress}%")
+                    
+                    final_status = self.apple_service.wait_for_completion(
+                        job_id=job_id,
+                        progress_callback=progress_callback
+                    )
 
-                _, item_id = get_url_info(task.url)
-                if handle_download_id(self.qobuz.downloads_db, item_id, add_id=False):
-                    asyncio.run(self._send_release_already_downloaded_message(task))
-                    continue
+                    if final_status.get("status") == "completed":
+                        # Send success message
+                        asyncio.run(self._send_success_message(task))
+                        self.fire_rescan()
+                    else:
+                        error_msg = final_status.get("error", "Unknown error")
+                        logger.error(f"Apple Music download failed for {task.url}: {error_msg}")
+                        asyncio.run(self._send_error_message(task, error_msg))
                 
-                # Download using Qobuz-dl
-                self.qobuz.handle_url(task.url)
-
-                if not handle_download_id(self.qobuz.downloads_db, item_id, add_id=False):
-                    asyncio.run(self._send_error_message(task, "Download did not complete successfully."))
-                else:
-                    # Send success message
-                    asyncio.run(self._send_success_message(task))
-                    self.fire_rescan()
+                except Exception as e:
+                    logger.error(f"Apple Music download failed for {task.url}: {e}")
+                    asyncio.run(self._send_error_message(task, str(e)))
                 
-            except Exception as e:
-                logger.error(f"Download failed for {task.url}: {e}")
-                asyncio.run(self._send_error_message(task, str(e)))
-            
-            finally:
-                self.is_downloading = False
+                finally:
+                    self.is_downloading = False
+                    self.download_queue.task_done()
+
+            elif task.streaming_type == "qobuz":
+                try:
+                    self.is_downloading = True
+                    logger.info(f"Starting Qobuz download: {task.url}")
+
+
+                    _, item_id = get_url_info(task.url)
+                    if handle_download_id(self.qobuz.downloads_db, item_id, add_id=False):
+                        asyncio.run(self._send_release_already_downloaded_message(task))
+                        continue
+                    
+                    # Download using Qobuz-dl
+                    self.qobuz.handle_url(task.url)
+
+                    if not handle_download_id(self.qobuz.downloads_db, item_id, add_id=False):
+                        asyncio.run(self._send_error_message(task, "Download did not complete successfully."))
+                    else:
+                        # Send success message
+                        asyncio.run(self._send_success_message(task))
+                        self.fire_rescan()
+                    
+                except Exception as e:
+                    logger.error(f"Download failed for {task.url}: {e}")
+                    asyncio.run(self._send_error_message(task, str(e)))
+                
+                finally:
+                    self.is_downloading = False
+                    self.download_queue.task_done()
+            else:
+                logger.error(f"Unknown streaming type: {task.streaming_type}")
                 self.download_queue.task_done()
 
     async def _send_release_already_downloaded_message(self, task: DownloadTask):
@@ -280,10 +373,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = update.message.text
     
-    # Extract Qobuz URLs from message
-    urls = QOBUZ_URL_PATTERN.findall(text)
+    qobuz_urls = QOBUZ_URL_PATTERN.findall(text)
+    apple_music_urls = APPLE_MUSIC_URL_PATTERN.findall(text)
     
-    if not urls:
+    if not qobuz_urls and not apple_music_urls:
         await update.message.reply_text(
             "❓ Please send a valid Qobuz URL.\n\n"
             "Example: https://play.qobuz.com/album/..."
@@ -291,18 +384,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # Queue each URL
-    for url in urls:
+    for url in qobuz_urls:
         task = DownloadTask(
             url=url,
             chat_id=update.effective_chat.id,
             message_id=update.message.message_id,
-            user_id=user_id
+            user_id=user_id,
+            streaming_type="qobuz"
+        )
+        bot_instance.add_download(task)
+
+    for url in apple_music_urls:
+        task = DownloadTask(
+            url=url,
+            chat_id=update.effective_chat.id,
+            message_id=update.message.message_id,
+            user_id=user_id,
+            streaming_type="apple_music"
         )
         bot_instance.add_download(task)
     
     queue_size = bot_instance.download_queue.qsize()
     await update.message.reply_text(
-        f"✅ Added {len(urls)} download(s) to queue!\n\n"
+        f"✅ Added {len(qobuz_urls+apple_music_urls)} download(s) to queue!\n\n"
         f"Queue position: #{queue_size}\n\n"
         f"You'll be notified when the download completes."
     )
