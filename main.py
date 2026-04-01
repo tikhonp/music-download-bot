@@ -61,6 +61,9 @@ START_SCAN_ENDPOINT = os.getenv("START_SCAN_ENDPOINT", "")
 
 APPLE_MUSIC_DOWNLOAD_URL=os.getenv("APPLE_MUSIC_DOWNLOAD_URL", "")
 
+# QobuzDL does not have a proxy param so i set env vers for it
+os.environ['HTTP_PROXY'] = PROXY_URL
+os.environ['HTTPS_PROXY'] = PROXY_URL
 
 if not APPLE_MUSIC_DOWNLOAD_URL:
     logger.warning("No APPLE_MUSIC_DOWNLOAD_URL configured. Set APPLE_MUSIC_DOWNLOAD_URL environment variable if needed.")

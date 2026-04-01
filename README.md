@@ -27,3 +27,15 @@ services:
       - "/path/to/your/downloads:/downloads"
       - "$HOME/.config/qobuz-dl:/qobuz-dl"
 ```
+
+## Development
+
+```sh
+# Create env
+python -m venv env
+. env/bin/activate
+pip install -r requirements.txt
+# point pylsp to this env
+export PYTHONPATH=env/lib/python3.14/site-packages
+nvim
+```
