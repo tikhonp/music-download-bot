@@ -39,6 +39,8 @@ WHITELIST_USERS = set(map(int, os.getenv("WHITELIST_USERS", "").split(","))) if 
 DOWNLOAD_PATH = os.getenv("DOWNLOAD_PATH", "./downloads")
 PROXY_URL = os.getenv("PROXY_URL", "")
 
+QOBUZ_ENABLED = os.getenv("QOBUZ_ENABLED", "true").lower() == "true"
+
 QOBUZ_DB = os.getenv("QOBUZ_DB", None)
 
 QOBUZ_EMAIL = os.getenv("QOBUZ_EMAIL", "")
@@ -78,9 +80,12 @@ if not WHITELIST_USERS:
     logger.warning("No whitelisted users configured. Set WHITELIST_USERS environment variable.")
     logger.warning("Example: WHITELIST_USERS=123456789,987654321")
 
-if not QOBUZ_EMAIL or not QOBUZ_PASSWORD:
+if QOBUZ_ENABLED and (not QOBUZ_EMAIL or not QOBUZ_PASSWORD):
     logger.error("Please set QOBUZ_EMAIL and QOBUZ_PASSWORD environment variables")
     sys.exit(1)
+
+if not QOBUZ_ENABLED:
+    logger.info("Qobuz downloads disabled via QOBUZ_ENABLED=false")
 
 if not PROXY_URL:
     logger.warning("No proxy configured. Set PROXY_URL environment variable if needed.")
@@ -144,9 +149,14 @@ class QobuzDownloadBot:
         self.download_queue: Queue = Queue()
         self.is_downloading = False
         
+        self.qobuz_enabled = QOBUZ_ENABLED
+
         # Initialize Qobuz-dl
         self.qobuz = None
-        self._init_qobuz()
+        if self.qobuz_enabled:
+            self._init_qobuz()
+        else:
+            logger.info("Skipping Qobuz initialization because QOBUZ_ENABLED is false")
 
         # Initialize Apple Music
         self.apple_service = AppleServiceSync(base_url=APPLE_MUSIC_DOWNLOAD_URL)
@@ -207,10 +217,21 @@ class QobuzDownloadBot:
                     self.download_queue.task_done()
 
             elif task.streaming_type == "qobuz":
+                if not self.qobuz_enabled:
+                    logger.warning("Received Qobuz task while QOBUZ_ENABLED is false")
+                    asyncio.run(self._send_error_message(task, "Qobuz downloads are disabled."))
+                    self.is_downloading = False
+                    self.download_queue.task_done()
+                    continue
+
                 try:
                     self.is_downloading = True
                     logger.info(f"Starting Qobuz download: {task.url}")
 
+                    if self.qobuz is None:
+                        asyncio.run(self._send_error_message(task, "Qobuz is not initialized."))
+                        logger.error("Qobuz requested but client is not initialized")
+                        continue
 
                     _, item_id = get_url_info(task.url)
                     if handle_download_id(self.qobuz.downloads_db, item_id, add_id=False):
@@ -308,10 +329,17 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
+    services = []
+    if QOBUZ_ENABLED:
+        services.append("Qobuz")
+    if APPLE_MUSIC_DOWNLOAD_URL:
+        services.append("Apple Music")
+    services_text = ", ".join(services) if services else "No services configured"
+
     await update.message.reply_text(
-        "🎵 *Qobuz Download Bot*\n\n"
-        "Send me a Qobuz link (album, track, playlist, artist, or label) "
-        "and I'll download it for you!\n\n"
+        "🎵 *Music Download Bot*\n\n"
+        f"Send me a link from: {services_text}.\n"
+        "I'll add it to the queue and notify you when it's done.\n\n"
         "Commands:\n"
         "/start - Show this message\n"
         "/queue - Show queue status\n"
@@ -345,18 +373,21 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ You are not authorized to use this bot.")
         return
     
+    supported = []
+    if QOBUZ_ENABLED:
+        supported.append("Qobuz (album, track, playlist, artist, label)")
+    if APPLE_MUSIC_DOWNLOAD_URL:
+        supported.append("Apple Music URLs")
+    supported_text = "\n".join(f"• {item}" for item in supported) if supported else "• No services configured"
+
     await update.message.reply_text(
-        "🎵 *Qobuz Download Bot Help*\n\n"
+        "🎵 *Music Download Bot Help*\n\n"
         "*How to use:*\n"
-        "1. Send any Qobuz URL (album, track, playlist, etc.)\n"
-        "2. The download will be queued automatically\n"
-        "3. You'll receive a notification when complete\n\n"
+        "1. Send a supported URL.\n"
+        "2. The download will be queued automatically.\n"
+        "3. You'll receive a notification when complete.\n\n"
         "*Supported URLs:*\n"
-        "• Albums\n"
-        "• Tracks\n"
-        "• Playlists\n"
-        "• Artists\n"
-        "• Labels\n\n"
+        f"{supported_text}\n\n"
         "*Commands:*\n"
         "/start - Show welcome message\n"
         "/queue - Check queue status\n"
@@ -374,16 +405,35 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     text = update.message.text
-    
-    qobuz_urls = QOBUZ_URL_PATTERN.findall(text)
+
+    supported_sources = []
+    if QOBUZ_ENABLED:
+        supported_sources.append("Qobuz")
+    if APPLE_MUSIC_DOWNLOAD_URL:
+        supported_sources.append("Apple Music")
+    supported_text = ", ".join(supported_sources) if supported_sources else "none"
+
+    detected_qobuz_urls = QOBUZ_URL_PATTERN.findall(text)
+    qobuz_urls = detected_qobuz_urls if QOBUZ_ENABLED else []
     apple_music_urls = APPLE_MUSIC_URL_PATTERN.findall(text)
-    
+
     if not qobuz_urls and not apple_music_urls:
+        if detected_qobuz_urls and not QOBUZ_ENABLED:
+            await update.message.reply_text(
+                "ℹ️ Qobuz downloads are disabled. Provide an Apple Music URL or enable QOBUZ_ENABLED."
+            )
+            return
+
         await update.message.reply_text(
-            "❓ Please send a valid Qobuz URL.\n\n"
-            "Example: https://play.qobuz.com/album/..."
+            "❓ Please send a supported URL.\n\n"
+            f"Supported sources: {supported_text}."
         )
         return
+
+    if detected_qobuz_urls and not QOBUZ_ENABLED:
+        await update.message.reply_text(
+            "ℹ️ Qobuz downloads are disabled by configuration. Only Apple Music links will be processed."
+        )
     
     # Queue each URL
     for url in qobuz_urls:
