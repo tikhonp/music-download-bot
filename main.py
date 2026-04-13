@@ -39,9 +39,7 @@ WHITELIST_USERS = set(map(int, os.getenv("WHITELIST_USERS", "").split(","))) if 
 DOWNLOAD_PATH = os.getenv("DOWNLOAD_PATH", "./downloads")
 PROXY_URL = os.getenv("PROXY_URL", "")
 
-OS_CONFIG = os.path.join(os.environ["HOME"], ".config")
-CONFIG_PATH = os.getenv("CONFIG_PATH", os.path.join(OS_CONFIG, "qobuz-dl"))
-QOBUZ_DB = os.path.join(CONFIG_PATH, "qobuz_dl.db")
+QOBUZ_DB = os.getenv("QOBUZ_DB", None)
 
 QOBUZ_EMAIL = os.getenv("QOBUZ_EMAIL", "")
 QOBUZ_PASSWORD = os.getenv("QOBUZ_PASSWORD", "")
