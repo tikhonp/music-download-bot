@@ -7,6 +7,7 @@ A Telegram bot that downloads music from Qobuz to specified directory
 1. Create a `.env` file in the project root like `.env.example`
 
    - Set `QOBUZ_ENABLED=false` to turn off Qobuz downloads (useful when you only want Apple Music handled by an external service).
+   - Set `APPLE_MUSIC_ENABLED=false` to turn off Apple Music downloads (useful when you only want Qobuz handled by this bot).
 
 2. Run the Docker container with the necessary environment variables:
 
