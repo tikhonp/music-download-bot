@@ -49,6 +49,7 @@ QOBUZ_DB = os.getenv("QOBUZ_DB", None)
 
 QOBUZ_EMAIL = os.getenv("QOBUZ_EMAIL", "")
 QOBUZ_PASSWORD = os.getenv("QOBUZ_PASSWORD", "")
+QOBUZ_EMBED_COVER = os.getenv("QOBUZ_EMBED_COVER", "true").lower() == "true"
 
 # Qobuz URL pattern
 QOBUZ_URL_PATTERN = re.compile(
@@ -194,7 +195,7 @@ class QobuzDownloadBot:
         self.qobuz = QobuzDL(
             directory=str(self.download_path),
             quality=27,  # Max quality
-            embed_art=True,
+            embed_art=QOBUZ_EMBED_COVER,
             downloads_db=QOBUZ_DB,
         )
         self.qobuz.get_tokens()
