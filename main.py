@@ -22,6 +22,7 @@ from telegram.ext import (
     filters,
 )
 from qobuz_dl.core import QobuzDL
+from qobuz_dl.settings import QobuzDLSettings
 from qobuz_dl.bundle import Bundle
 from qobuz_dl.utils import get_url_info
 from qobuz_dl.db import handle_download_id
@@ -192,11 +193,14 @@ class QobuzDownloadBot:
         bundle = Bundle()
         app_id = str(bundle.get_app_id())
         secrets = ",".join(bundle.get_secrets().values())
+        settings = QobuzDLSettings(max_workers=1, delay=0.5)
+        settings.delay = 0.5  # Add delay to reduce risk of rate limiting
         self.qobuz = QobuzDL(
             directory=str(self.download_path),
             quality=27,  # Max quality
             embed_art=QOBUZ_EMBED_COVER,
             downloads_db=QOBUZ_DB,
+            settings=settings,
         )
         self.qobuz.get_tokens()
         self.qobuz.initialize_client(QOBUZ_EMAIL, QOBUZ_PASSWORD, app_id, secrets)
