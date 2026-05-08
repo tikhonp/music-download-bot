@@ -58,6 +58,8 @@ QOBUZ_URL_PATTERN = re.compile(
     r"(?:album|track|playlist|artist|label)/[a-zA-Z0-9\-_]+"
 )
 
+QOBUZ_BATCH_DOWNLOAD_ENABLED = os.getenv("QOBUZ_BATCH_DOWNLOAD_ENABLED", "true").lower() == "true"
+
 # Apple Music URL pattern
 APPLE_MUSIC_URL_PATTERN = re.compile(
     r"https?://(?:music\.apple\.com|itunes\.apple\.com)/\S+"
@@ -193,8 +195,10 @@ class QobuzDownloadBot:
         bundle = Bundle()
         app_id = str(bundle.get_app_id())
         secrets = ",".join(bundle.get_secrets().values())
-        settings = QobuzDLSettings(max_workers=1, delay=0.5)
-        settings.delay = 0.5  # Add delay to reduce risk of rate limiting
+        settings = None
+        if not QOBUZ_BATCH_DOWNLOAD_ENABLED:
+            settings = QobuzDLSettings(max_workers=1, delay=0.5)
+            settings.delay = 0.5  # Add delay to reduce risk of rate limiting
         self.qobuz = QobuzDL(
             directory=str(self.download_path),
             quality=27,  # Max quality
