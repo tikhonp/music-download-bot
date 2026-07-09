@@ -11,6 +11,7 @@ from pathlib import Path
 from queue import Queue
 from threading import Thread
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
+from urllib.parse import urlparse
 
 import requests
 
@@ -256,7 +257,37 @@ class QobuzDownloadBot:
 
     # -- setup --------------------------------------------------------------
 
+    def _configure_qobuz_proxy(self) -> None:
+        """Route every qobuz-dl HTTP call through PROXY_URL.
+
+        qobuz-dl creates its own requests Sessions (bundle fetch, auth, and a
+        fresh Session per track download) and exposes no proxy setting, so the
+        only way to proxy all of them is via the standard *_PROXY env vars,
+        which requests honours through trust_env. The internal Apple Music
+        service host is excluded so it stays on the direct (docker) network.
+        """
+        proxy = self.config.proxy_url
+        if not proxy:
+            return
+
+        for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+            os.environ[var] = proxy
+
+        no_proxy = [os.environ.get("NO_PROXY", "").strip()]
+        if self.config.apple_music_download_url:
+            host = urlparse(self.config.apple_music_download_url).hostname
+            if host:
+                no_proxy.append(host)
+        no_proxy_value = ",".join(h for h in no_proxy if h)
+        if no_proxy_value:
+            os.environ["NO_PROXY"] = no_proxy_value
+            os.environ["no_proxy"] = no_proxy_value
+
+        logger.info("Routing Qobuz traffic through proxy")
+
     def _init_qobuz(self) -> None:
+        self._configure_qobuz_proxy()
+
         bundle = Bundle()
         app_id = str(bundle.get_app_id())
         secrets = ",".join(bundle.get_secrets().values())
