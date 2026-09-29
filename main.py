@@ -295,7 +295,7 @@ class QobuzDownloadBot:
         settings = None
         if not self.config.qobuz_batch_download_enabled:
             # Single-threaded with a small delay to reduce rate-limit risk.
-            settings = QobuzDLSettings(max_workers=1, delay=0.5)
+            settings = QobuzDLSettings(max_workers=1, delay=1)
 
         self.qobuz = QobuzDL(
             directory=str(self.download_path),
