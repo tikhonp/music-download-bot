@@ -93,6 +93,7 @@ class Config:
     qobuz_db: Optional[str]
     qobuz_embed_cover: bool
     qobuz_batch_download_enabled: bool
+    qobuz_quality_fallback: bool
 
     apple_music_enabled: bool
     apple_music_download_url: str
@@ -113,6 +114,7 @@ class Config:
             qobuz_batch_download_enabled=_env_bool(
                 "QOBUZ_BATCH_DOWNLOAD_ENABLED", True
             ),
+            qobuz_quality_fallback=_env_bool("QOBUZ_QUALITY_FALLBACK", False),
             apple_music_enabled=_env_bool("APPLE_MUSIC_ENABLED", True),
             apple_music_download_url=os.getenv("APPLE_MUSIC_DOWNLOAD_URL", "").strip(),
         )
@@ -300,6 +302,7 @@ class QobuzDownloadBot:
         self.qobuz = QobuzDL(
             directory=str(self.download_path),
             quality=27,  # Max quality
+            quality_fallback=self.config.qobuz_quality_fallback,
             embed_art=self.config.qobuz_embed_cover,
             downloads_db=self.config.qobuz_db,
             settings=settings,

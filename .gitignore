@@ -3,4 +3,5 @@ env/
 .env
 llmtmp/
 CLAUDE.md
+.claude/
 __pycache__/
