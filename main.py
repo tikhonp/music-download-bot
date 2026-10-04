@@ -5,16 +5,21 @@ import os
 import re
 import sys
 import time
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from queue import Queue
 from threading import Thread
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
+from typing import Any
 from urllib.parse import urlparse
 
 import requests
-
+from qobuz_dl.bundle import Bundle
+from qobuz_dl.core import QobuzDL
+from qobuz_dl.db import handle_download_id
+from qobuz_dl.settings import QobuzDLSettings
+from qobuz_dl.utils import get_url_info
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -23,12 +28,6 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
-
-from qobuz_dl.bundle import Bundle
-from qobuz_dl.core import QobuzDL
-from qobuz_dl.db import handle_download_id
-from qobuz_dl.settings import QobuzDLSettings
-from qobuz_dl.utils import get_url_info
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -64,8 +63,8 @@ def _env_bool(name: str, default: bool) -> bool:
     return os.getenv(name, str(default)).strip().lower() == "true"
 
 
-def _parse_whitelist(raw: str) -> Set[int]:
-    users: Set[int] = set()
+def _parse_whitelist(raw: str) -> set[int]:
+    users: set[int] = set()
     for part in raw.split(","):
         part = part.strip()
         if not part:
@@ -82,15 +81,15 @@ def _parse_whitelist(raw: str) -> Set[int]:
 @dataclass(frozen=True)
 class Config:
     bot_token: str
-    whitelist_users: Set[int]
+    whitelist_users: set[int]
     download_path: str
-    proxy_url: Optional[str]
+    proxy_url: str | None
     start_scan_endpoint: str
 
     qobuz_enabled: bool
     qobuz_email: str
     qobuz_password: str
-    qobuz_db: Optional[str]
+    qobuz_db: str | None
     qobuz_embed_cover: bool
     qobuz_batch_download_enabled: bool
     qobuz_quality_fallback: bool
@@ -121,7 +120,7 @@ class Config:
 
     def validate(self) -> None:
         """Fail fast on misconfiguration; warn on optional gaps."""
-        errors: List[str] = []
+        errors: list[str] = []
 
         if not self.bot_token or self.bot_token == _PLACEHOLDER_TOKEN:
             errors.append("TELEGRAM_BOT_TOKEN is required")
@@ -157,7 +156,7 @@ class Config:
         if not self.proxy_url:
             logger.warning("No PROXY_URL configured")
 
-    def enabled_services(self) -> List[str]:
+    def enabled_services(self) -> list[str]:
         services = []
         if self.qobuz_enabled:
             services.append("Qobuz")
@@ -183,7 +182,9 @@ class AppleServiceSync:
     def start_download(
         self, url: str, fmt: str = "alac", song: bool = False, debug: bool = False
     ) -> str:
-        payload = {"url": url, "format": fmt, "song": song, "debug": debug}
+        payload: dict[str, str | bool] = {
+            "url": url, "format": fmt, "song": song, "debug": debug
+        }
         resp = requests.post(
             f"{self.base_url}/download", json=payload, timeout=self.timeout
         )
@@ -193,7 +194,7 @@ class AppleServiceSync:
             raise AppleServiceError("Download service did not return a job_id")
         return job_id
 
-    def get_status(self, job_id: str) -> Dict[str, Any]:
+    def get_status(self, job_id: str) -> dict[str, Any]:
         resp = requests.get(f"{self.base_url}/status/{job_id}", timeout=self.timeout)
         resp.raise_for_status()
         return resp.json()
@@ -203,8 +204,8 @@ class AppleServiceSync:
         job_id: str,
         poll_interval: float = 2.0,
         max_wait: float = 3600.0,
-        progress_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
-    ) -> Dict[str, Any]:
+        progress_callback: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
         """Poll until status is completed/failed, or raise on timeout."""
         deadline = time.time() + max_wait
         while True:
@@ -243,14 +244,14 @@ class QobuzDownloadBot:
         self.download_path = Path(config.download_path)
         self.download_path.mkdir(parents=True, exist_ok=True)
 
-        self.download_queue: "Queue[DownloadTask]" = Queue()
+        self.download_queue: Queue[DownloadTask] = Queue()
         self.is_downloading = False
 
-        self.qobuz: Optional[QobuzDL] = None
+        self.qobuz: QobuzDL | None = None
         if config.qobuz_enabled:
             self._init_qobuz()
 
-        self.apple_service: Optional[AppleServiceSync] = None
+        self.apple_service: AppleServiceSync | None = None
         if config.apple_music_enabled:
             self.apple_service = AppleServiceSync(config.apple_music_download_url)
 
@@ -330,7 +331,7 @@ class QobuzDownloadBot:
     # -- worker -------------------------------------------------------------
 
     def _download_worker(self) -> None:
-        handlers: Dict[StreamingType, Callable[[DownloadTask], None]] = {
+        handlers: dict[StreamingType, Callable[[DownloadTask], None]] = {
             StreamingType.QOBUZ: self._download_qobuz,
             StreamingType.APPLE_MUSIC: self._download_apple_music,
         }
@@ -395,7 +396,7 @@ class QobuzDownloadBot:
 
         job_id = self.apple_service.start_download(url=task.url, fmt="alac")
 
-        def progress_callback(status: Dict[str, Any]) -> None:
+        def progress_callback(status: dict[str, Any]) -> None:
             logger.info(
                 "Apple Music progress for %s: %s%%",
                 task.url,
@@ -437,7 +438,7 @@ class QobuzDownloadBot:
         try:
             asyncio.run(_send())
         except Exception:
-            logger.error("Failed to send Telegram message to %s", task.chat_id, exc_info=True)
+            logger.exception("Failed to send Telegram message to %s", task.chat_id)
 
     def fire_rescan(self) -> None:
         if not self.config.start_scan_endpoint:
@@ -448,7 +449,7 @@ class QobuzDownloadBot:
             resp.raise_for_status()
             logger.info("Rescan triggered successfully")
         except Exception:
-            logger.error("Error triggering rescan", exc_info=True)
+            logger.exception("Error triggering rescan")
 
 
 # ---------------------------------------------------------------------------
@@ -459,7 +460,7 @@ config = Config.from_env()
 config.validate()
 bot_instance = QobuzDownloadBot(config)
 
-Handler = Callable[[Update, ContextTypes.DEFAULT_TYPE], Awaitable[None]]
+Handler = Callable[[Update, ContextTypes.DEFAULT_TYPE], Coroutine[Any, Any, None]]
 
 
 def restricted(handler: Handler) -> Handler:
@@ -481,9 +482,12 @@ def restricted(handler: Handler) -> Handler:
 
 @restricted
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.message
+    if message is None:
+        return
     services = config.enabled_services()
     services_text = ", ".join(services) if services else "No services configured"
-    await update.message.reply_text(
+    await message.reply_text(
         "🎵 *Music Download Bot*\n\n"
         f"Send me a link from: {services_text}.\n"
         "I'll add it to the queue and notify you when it's done.\n\n"
@@ -497,9 +501,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 @restricted
 async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.message
+    if message is None:
+        return
     queue_size = bot_instance.download_queue.qsize()
     status = "🔄 Downloading..." if bot_instance.is_downloading else "⏸ Idle"
-    await update.message.reply_text(
+    await message.reply_text(
         f"📊 *Queue Status*\n\nStatus: {status}\nItems in queue: {queue_size}",
         parse_mode="Markdown",
     )
@@ -507,6 +514,9 @@ async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 @restricted
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.message
+    if message is None:
+        return
     descriptions = {
         "Qobuz": "Qobuz (album, track, playlist, artist, label)",
         "Apple Music": "Apple Music URLs",
@@ -517,7 +527,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if supported
         else "• No services configured"
     )
-    await update.message.reply_text(
+    await message.reply_text(
         "🎵 *Music Download Bot Help*\n\n"
         "*How to use:*\n"
         "1. Send a supported URL.\n"
@@ -533,12 +543,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
-def _extract_urls(text: str, pattern: re.Pattern, enabled: bool) -> List[str]:
+def _extract_urls(text: str, pattern: re.Pattern, enabled: bool) -> list[str]:
     """Return de-duplicated matches in order; empty when the service is disabled."""
     if not enabled:
         return []
-    seen: Set[str] = set()
-    urls: List[str] = []
+    seen: set[str] = set()
+    urls: list[str] = []
     for url in pattern.findall(text):
         if url not in seen:
             seen.add(url)
@@ -548,27 +558,32 @@ def _extract_urls(text: str, pattern: re.Pattern, enabled: bool) -> List[str]:
 
 @restricted
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    text = update.message.text or ""
+    message = update.message
+    chat = update.effective_chat
+    user = update.effective_user
+    if message is None or chat is None or user is None:
+        return
+    text = message.text or ""
 
     qobuz_urls = _extract_urls(text, QOBUZ_URL_PATTERN, config.qobuz_enabled)
     apple_urls = _extract_urls(text, APPLE_MUSIC_URL_PATTERN, config.apple_music_enabled)
 
     if not qobuz_urls and not apple_urls:
         if QOBUZ_URL_PATTERN.search(text) and not config.qobuz_enabled:
-            await update.message.reply_text(
+            await message.reply_text(
                 "ℹ️ Qobuz downloads are disabled. Provide an Apple Music URL or "
                 "enable QOBUZ_ENABLED."
             )
             return
         if APPLE_MUSIC_URL_PATTERN.search(text) and not config.apple_music_enabled:
-            await update.message.reply_text(
+            await message.reply_text(
                 "ℹ️ Apple Music downloads are disabled. Provide a Qobuz URL or "
                 "enable APPLE_MUSIC_ENABLED."
             )
             return
         services = config.enabled_services()
         supported_text = ", ".join(services) if services else "none"
-        await update.message.reply_text(
+        await message.reply_text(
             f"❓ Please send a supported URL.\n\nSupported sources: {supported_text}."
         )
         return
@@ -577,9 +592,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         bot_instance.add_download(
             DownloadTask(
                 url=url,
-                chat_id=update.effective_chat.id,
-                message_id=update.message.message_id,
-                user_id=update.effective_user.id,
+                chat_id=chat.id,
+                message_id=message.message_id,
+                user_id=user.id,
                 streaming_type=StreamingType.QOBUZ,
             )
         )
@@ -587,15 +602,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         bot_instance.add_download(
             DownloadTask(
                 url=url,
-                chat_id=update.effective_chat.id,
-                message_id=update.message.message_id,
-                user_id=update.effective_user.id,
+                chat_id=chat.id,
+                message_id=message.message_id,
+                user_id=user.id,
                 streaming_type=StreamingType.APPLE_MUSIC,
             )
         )
 
     total = len(qobuz_urls) + len(apple_urls)
-    await update.message.reply_text(
+    await message.reply_text(
         f"✅ Added {total} download(s) to the queue!\n\n"
         f"Items in queue: {bot_instance.download_queue.qsize()}\n\n"
         "You'll be notified when each download completes."
