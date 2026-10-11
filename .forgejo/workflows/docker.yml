@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 env:
-  REGISTRY: git.tikhonnnnn.com
+  REGISTRY: code.tikhonnnnn.com
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
