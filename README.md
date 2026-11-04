@@ -1,5 +1,8 @@
 # music-download-bot
 
+> [!NOTE]
+> This repository is archived. I implemented [shelf](https://github.com/tikhonp/shelf) for this purpose, so use that instead.
+
 A Telegram bot that downloads music from Qobuz to specified directory
 
 ## Running with Docker
